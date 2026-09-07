@@ -16,3 +16,42 @@ jobs:
         run: npm ci
       - name: Build application
         run: npm run build
+
+      - name: Prepare SSH key
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          install -m 600 /dev/null ./ec2-key.pem
+          printf '%s\n' "$EC2_SSH_KEY" > ./ec2-key.pem
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Create deployment directory
+        run: |
+          ssh -i ./ec2-key.pem "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" \
+            'mkdir -p ~/sample-server'
+
+      - name: Copy application to EC2
+        run: |
+          scp -i ./ec2-key.pem -r \
+            dist \
+            package.json \
+            package-lock.json \
+            tsconfig.json \
+            tsconfig.build.json \
+            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~/sample-server/"
+
+      - name: Install dependencies and restart application
+        run: |
+          ssh -i ./ec2-key.pem "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" <<'EOF'
+            set -e
+            cd ~/sample-server
+            npm ci --omit=dev
+            command -v pm2 >/dev/null 2>&1 || npm install --global pm2
+            pm2 reload sample-server --update-env || pm2 start npm --name sample-server -- run start:prod
+            pm2 save
+          EOF
+
+      - name: Remove SSH key
+        if: ${{ always() }}
+        run: rm -f ./ec2-key.pem
